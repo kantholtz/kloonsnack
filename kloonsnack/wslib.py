@@ -16,6 +16,38 @@
 #   This document is licensed under the GPL v2.
 #
 import http
+import logging
+
+#
+#   All optional initialization that is not
+#   part of the base functionality
+#
+log = logging.StreamHandler()
+log.setFormatter(
+    logging.Formatter(
+        ' '.join([
+            '$(asctime)s: ',
+            '[wslib] [$(levelname)s] ',
+            '[$(threadName)s] [$(funcName)s:$(lineno)s]',
+            '$(message)s'
+        ])
+    )
+)
+log.setLevel(logging.ERROR)
+
+
+def setVerbose(verbose=True):
+    if verbose:
+        log.setLevel(logging.INFO)
+    else:
+        log.setLevel(logging.ERROR)
+
+
+def setQuiet(quiet=True):
+    if quiet:
+        log.disable(logging.CRITICAL)
+    else:
+        log.disable(logging.NOTSET)
 
 
 #
@@ -94,6 +126,7 @@ class HTTPRequest():
         """
             Check the first HTTP line.
         """
+        log.info('HTTP parsing %s' % statusline)
         try:
             meth, res, prot = statusline.split()
             return meth, res, prot
@@ -105,11 +138,13 @@ class HTTPRequest():
             Maps all key-value http header
             pairs to a dictionary.
         """
+        log.info('HTTP parsing header')
         for headerline in headerlines:
             if not headerline:
                 break
             key, val = re.split(':', headerline, maxsplit=1)
             self.header[key.lower().strip()] = val.strip()
+            log.info('HTTP got %d header lines' % len(self.header))
 
     def _parse_protocol(self, protocolstr):
         """
@@ -124,11 +159,16 @@ class HTTPRequest():
         #   protocol only requires the http version
         #   to be greater or equal to 1.1.
         #
+        log.info('HTTP parsing protocol version')
         regex = r'HTTP/(\d+)\.(\d)(\d)*'
         match = re.match(regex, protocolstr).groups()
-        return int(match[0]) * 10 + int(match[1])
+        prot = int(match[0]) * 10 + int(match[1])
+
+        log.info('HTTP protocol version %d detected' % prot)
+        return prot
 
     def __init__(self, asock):
+        log.info('HTTP create request object')
         self._msg = asock.recv(MAX_HTTPHEADER_SIZE)
         header, body = re.split('\r\n\r\n', self._msg, maxsplit=1)
         header = header.splitlines()
@@ -155,6 +195,8 @@ class WSConnection():
             Handle the opening handshake.
             http://tools.ietf.org/html/rfc6455 Section 1.3
         """
+        log.info('WS handling the handshake')
+
         # wrap the incoming request into
         # an http request object
         req = HTTPRequest(self)
@@ -195,11 +237,10 @@ class WSConnection():
         # check origin header field
         key = 'origin'
         if key not in req.header:
-            # TODO Means that it is a non-browser
-            # connection. Not sure how
-            # to handle that at the moment.
-            # Maybe a property can be set to
-            # indicate the lack of this field.
+            # TODO This means that it is a non-browser
+            # connection. Not sure how to handle
+            # that at the moment. Maybe a property can
+            # be set to indicate the lack of this field.
             pass
 
         key = 'sec-websocket-version'
@@ -214,6 +255,7 @@ class WSConnection():
             raise WSRequestError('no sec-websocket-key header field')
 
         # craft the response key
+        log.info('WS crafting the response key')
         guid = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
         key = req.header[key] + guid
         key = hashlib.sha1(key).digest()
@@ -234,9 +276,63 @@ class WSConnection():
         response.extend(headers)
 
         response = '\r\n'.join(response) + '\r\n\r\n'
-        print 'sending %s' % response
+        log.info('WS sending a high five to the client')
         self.send(response)
+
         self._state = STATE_OPEN
+        log.info('WS state is now OPEN')
+
+    def _read_header(self):
+        """
+            Every WebSocket frame has a header field of variable
+            length based on the payload size. This method gathers
+            all information from these header fields.
+            http://tools.ietf.org/html/rfc6455 Section 5.2
+        """
+        log.info('WS reading frame header')
+        buf = self.recv(2)
+        fop, length = struct.unpack('BB', buf)
+
+        # check if FIN is set (bit 7)
+        fin = True if 2**7 & fop else False
+
+        # get rsv values (bit 4-6)
+        rsv = (0x70 & fop) >> 0x4
+
+        # get op code (bit 0-3)
+        opcode = (0xF & fop)
+
+        # lets assume, for the moment,
+        # that these flags must never be set
+        # TODO implement rsv handling
+        if rsv != 0:
+            raise WSRequestError('one of the rsv bits is set')
+
+        # masking
+        masked = True if 2**7 & length else False
+        if not masked:
+            raise WSRequestError('incoming request is not masked')
+
+        # determine payload length
+        length -= 2**7
+        if length == 126:
+            buf = self.recv(2)
+            length = struct.unpack('!H', buf)[0]
+        elif length == 127:
+            buf = self.recv(8)
+            length = struct.unpack('!Q', buf)[0]
+
+        # mask
+        buf = self.recv(4)
+        mask = struct.unpack('I', buf)[0]
+
+        print('ws request:')
+        print('fin: %s, rsv: %d, opcode %d' % (str(fin), rsv, opcode))
+        print('masked: %s, length: %d' % (str(masked), length))
+        print('masking key: 0x%x' % mask)
+
+        log.info('WS analyzed frame header')
+        self._handler(WSPayload(self, length, mask))
 
     def __init__(self):
         pass
