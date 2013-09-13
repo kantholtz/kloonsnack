@@ -17,6 +17,7 @@
 #
 import http
 import logging
+import asyncore
 
 #
 #   All optional initialization that is not
@@ -186,7 +187,50 @@ class HTTPRequest():
         self._parse_header(header[1:])
 
 
-class WSConnection():
+class WSPayload():
+    """
+        Every incoming WebSocket frame
+        is masked and must be decrypted.
+        This class encapsulates a WebSocket
+        frame and offers a method to read
+        the decrypted payload from the socket.
+    """
+    def __init__(self, sock, length, mask):
+        self._sock = sock
+        self._mask = mask
+        self.length = length
+
+    def read(self, n=None):
+        """
+            Reads all or up to n bytes of data
+            from the socket, decrypts and returns
+            the frames payload.
+        """
+        log.info('WS reading %d bytes from the sockets frame')
+        length = self.length if n is None else n
+
+        buf = self._sock.recv(length)
+        data = []
+        i = 0
+
+        # decrypt the incoming message
+        # by using one of the four octets
+        # from the mask.
+        bitmask = [self._mask >> x for x in range(0, 0x19, 8)]
+        bitmask = map(lambda x: 0xFF & x, bitmask)
+
+        while i < length:
+            val = ord(buf[i]) ^ bitmask[i % 4]
+            data.append(chr(val))
+            i += 1
+
+        if n is not None:
+            self.length -= length
+
+        return ''.join(data)
+
+
+class WSConnection(asyncore.dispatcher_with_send):
     """
         Handles all stages of a WebSocket connection.
     """
@@ -286,7 +330,9 @@ class WSConnection():
         """
             Every WebSocket frame has a header field of variable
             length based on the payload size. This method gathers
-            all information from these header fields.
+            all information from these header fields. The handler
+            method that must be provided upon instantiation gets
+            called from this method after the header got examined.
             http://tools.ietf.org/html/rfc6455 Section 5.2
         """
         log.info('WS reading frame header')
@@ -334,5 +380,17 @@ class WSConnection():
         log.info('WS analyzed frame header')
         self._handler(WSPayload(self, length, mask))
 
-    def __init__(self):
-        pass
+    def __init__(self, sock, handler):
+        log.info('WS create connection object based on %s' % str(sock))
+        self._handler = handler
+        asyncore.dispatcher_with_send.__init__(self, sock)
+
+        # http://tools.ietf.org/html/rfc6455 Section 4.1
+        self.state = STATE_CONNECTING
+
+    def handle_read(self):
+        log.info('WS handling read (state: %s)' % self._state)
+        if self._state == STATE_CONNECTING:
+            self._handle_greeting()
+        elif self._state == STATE_OPEN:
+            self._read_header()
