@@ -15,8 +15,13 @@
 #
 #   This document is licensed under the GPL v2.
 #
+import re
 import http
+import base64
+import struct
+import urllib
 import logging
+import hashlib
 import asyncore
 
 #
@@ -259,7 +264,7 @@ class WSConnection(asyncore.dispatcher_with_send):
             raise WSRequestError('missing host header field')
 
         try:
-            url = urlparse.urlparse(req.header[key])
+            url = urllib.parse.urlparse(req.header[key])
         except ValueError:
             raise WSRequestError('invalid host header field')
 
@@ -309,8 +314,8 @@ class WSConnection(asyncore.dispatcher_with_send):
         response = []
         response.append('%s %d %s' % (
             req.protocol,
-            httplib.SWITCHING_PROTOCOLS,
-            httplib.responses[httplib.SWITCHING_PROTOCOLS]
+            http.client.SWITCHING_PROTOCOLS,
+            http.client.responses[http.client.SWITCHING_PROTOCOLS]
         ))
         headers = map(lambda s: ': '.join(s), {
             'Upgrade': 'websocket',
