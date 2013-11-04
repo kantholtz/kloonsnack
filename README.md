@@ -1,4 +1,4 @@
 kloonsnack
 ==========
 
-Websocket based python chat server
+This is gonna be a library for the websocket protocol.
